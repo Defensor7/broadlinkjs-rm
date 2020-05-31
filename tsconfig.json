@@ -1,9 +1,14 @@
 {
   "compilerOptions": {
     "outDir": "./built",
-    "allowJs": true,
+    "allowJs": false,
     "downlevelIteration": true,
-    "target": "es5"
+    "esModuleInterop": true,
+    "lib": ["ES6"],
+    "target": "es5",
+    "module": "CommonJS",
+    "strict": true,
+    "noImplicitAny": true
   },
   "include": ["./src/**/*"]
 }

@@ -1,26 +1,8 @@
-const EventEmitter = require('events');
-const dgram = require('dgram');
-const { networkInterfaces } = require('os');
-const assert = require('assert');
-
-declare class Cipher {
-  update(buffer: Buffer): void;
-}
-
-declare class Decipher {
-  update(encrypted: Buffer): any;
-  setAutoPadding(on: boolean): void;
-  final(): any;
-}
-
-interface Crypto {
-  createCipheriv(name: string, key: Buffer, iv: Buffer): Cipher;
-  createDecipheriv(name: string, key: Buffer, iv: Buffer): Decipher;
-}
-
-class Socket {
-  close: () => void;
-}
+import { EventEmitter } from 'events';
+import { createSocket, Socket, RemoteInfo } from 'dgram';
+import { networkInterfaces } from 'os';
+import assert from 'assert';
+import crypto from 'crypto';
 
 // RM Devices (without RF support)
 const rmDeviceTypes = new Map([
@@ -94,9 +76,11 @@ class Broadlink extends EventEmitter {
 
   devices: Map<Buffer, Device>;
   sockets: Array<Socket>;
-  constructor() {
+  constructor(debug = false) {
     super();
 
+    this.log = console.log;
+    this.debug = debug;
     this.devices = new Map();
     this.sockets = [];
   }
@@ -113,7 +97,7 @@ class Broadlink extends EventEmitter {
     const ipAddresses = this.getIPAddresses();
 
     ipAddresses.forEach((ipAddress) => {
-      const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      const socket = createSocket({ type: 'udp4', reuseAddr: true });
       this.sockets.push(socket);
 
       socket.on('listening', this.onListening.bind(this, socket, ipAddress));
@@ -124,23 +108,20 @@ class Broadlink extends EventEmitter {
   }
 
   getIPAddresses() {
-    const interfaces = networkInterfaces();
-    const ipAddresses = [];
+    const interfaces = Object.values(networkInterfaces());
 
-    Object.keys(interfaces).forEach((interfaceID) => {
-      const currentInterface = interfaces[interfaceID];
-
-      currentInterface.forEach((address) => {
-        if (address.family === 'IPv4' && !address.internal) {
-          ipAddresses.push(address.address);
-        }
-      });
-    });
-
-    return ipAddresses;
+    return interfaces.reduce(
+      (ipAddresses: Array<string>, interfaceInfos = []) => [
+        ...ipAddresses,
+        ...interfaceInfos
+          .filter(({ family, internal }) => family === 'IPv4' && !internal)
+          .map(({ address }) => address),
+      ],
+      []
+    );
   }
 
-  onListening(socket, ipAddress) {
+  onListening(socket: Socket, ipAddress: string) {
     const { debug, log } = this;
 
     // Broadcase a multicast UDP message to let Broadlink devices know we're listening
@@ -201,10 +182,10 @@ class Broadlink extends EventEmitter {
     packet[0x20] = checksum & 0xff;
     packet[0x21] = checksum >> 8;
 
-    socket.sendto(packet, 0, packet.length, 80, '255.255.255.255');
+    socket.send(packet, 0, packet.length, 80, '255.255.255.255');
   }
 
-  onMessage(message, host) {
+  onMessage(message: Buffer, host: RemoteInfo) {
     // Broadlink device has responded
     const macAddress = Buffer.alloc(6, 0);
 
@@ -216,8 +197,7 @@ class Broadlink extends EventEmitter {
     message.copy(macAddress, 0x05, 0x3a);
 
     // Ignore if we already know about this device
-    const key = macAddress.toString('hex');
-    if (this.devices[key]) return;
+    if (this.devices.has(macAddress)) return;
 
     const deviceType = message[0x34] | (message[0x35] << 8);
 
@@ -225,7 +205,7 @@ class Broadlink extends EventEmitter {
     this.addDevice(host, macAddress, deviceType);
   }
 
-  addDevice(host: Host, macAddress: Buffer, deviceType: number) {
+  addDevice(host: RemoteInfo, macAddress: Buffer, deviceType: number) {
     const { log, debug } = this;
 
     if (this.devices.has(macAddress)) return;
@@ -268,17 +248,11 @@ class Broadlink extends EventEmitter {
     }
 
     const isRM4Device = rm4DeviceTypes.has(deviceType);
-    let device = null;
-
-    // The Broadlink device is something we can use.
-    if (isRM4Device) {
-      device = new DeviceRM4(host, macAddress, deviceType);
-    } else {
-      device = new Device(host, macAddress, deviceType);
-    }
-
-    device.log = log;
-    device.debug = debug;
+    const deviceClass = isRM4Device ? DeviceRM4 : Device;
+    const device = new deviceClass(host, macAddress, deviceType, {
+      log,
+      debug,
+    });
 
     this.devices.set(macAddress, device);
 
@@ -291,37 +265,35 @@ class Broadlink extends EventEmitter {
   }
 }
 
-class Host {
-  port: number;
-  address: string;
-}
-
-class Device {
-  host: Host;
+class Device extends EventEmitter {
+  host: RemoteInfo;
   mac: Buffer;
-  on: (string) => void;
-  emit: (string, ...args: any[]) => void;
-  removeListener: (any) => void;
   type: number;
   model: string;
   count: number;
   key: Buffer;
   iv: Buffer;
   id: Buffer;
-  socket: any;
-  log: (...message: any[]) => void;
+  socket: Socket;
+  log: typeof console.log;
+  debug: boolean;
+  enterRFSweep: (() => void) | undefined;
+  checkRFData: (() => void) | undefined;
+  checkRFData2: (() => void) | undefined;
 
-  constructor(host, macAddress, deviceType: number) {
+  constructor(
+    host: RemoteInfo,
+    macAddress: Buffer,
+    deviceType: number,
+    { log, debug }: { log: typeof console.log; debug: boolean }
+  ) {
+    super();
     this.host = host;
     this.mac = macAddress;
-    const emitter = new EventEmitter();
-    this.log = console.log;
+    this.log = log;
+    this.debug = debug;
     this.type = deviceType;
-    this.model = allSupportedDevices.get(deviceType);
-
-    this.on = emitter.on;
-    this.emit = emitter.emit;
-    this.removeListener = emitter.removeListener;
+    this.model = allSupportedDevices.get(deviceType) || 'Unknown';
 
     this.count = Math.random() & 0xffff;
     this.key = Buffer.from([
@@ -362,17 +334,17 @@ class Device {
     ]);
     this.id = Buffer.from([0, 0, 0, 0]);
 
+    this.socket = createSocket({ type: 'udp4', reuseAddr: true });
     this.setupSocket();
 
     // Dynamically add relevant RF methods if the device supports it
-    const isRFSupported = rmPlusDeviceTypes[deviceType];
+    const isRFSupported = rmPlusDeviceTypes.has(deviceType);
     if (isRFSupported) this.addRFSupport();
   }
 
   // Create a UDP socket to receive messages from the broadlink device.
   setupSocket() {
-    const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    this.socket = socket;
+    const { socket } = this;
 
     socket.on('message', (response) => {
       const encryptedPayload = Buffer.alloc(response.length - 0x38, 0);
@@ -446,7 +418,7 @@ class Device {
     this.sendPacket(0x65, payload);
   }
 
-  sendPacket(command, payload, debug = false) {
+  sendPacket(command: number, payload: Buffer, debug = false) {
     const { log, socket } = this;
     this.count = (this.count + 1) & 0xffff;
 
@@ -517,7 +489,7 @@ class Device {
     );
   }
 
-  onPayloadReceived(err, payload) {
+  onPayloadReceived(err: number, payload: Buffer) {
     const param = payload[0];
 
     const data = Buffer.alloc(payload.length - 4, 0);
@@ -563,7 +535,7 @@ class Device {
     this.sendPacket(0x6a, packet);
   }
 
-  sendData(data, debug = false) {
+  sendData(data: Buffer, debug = false) {
     let packet = Buffer.from([0x02, 0x00, 0x00, 0x00]);
     packet = Buffer.concat([packet, data]);
     this.sendPacket(0x6a, packet, debug);
@@ -586,10 +558,6 @@ class Device {
     packet[0] = 0x1e;
     this.sendPacket(0x6a, packet);
   }
-  enterRFSweep: () => void;
-  checkRFData: () => void;
-  checkRFData2: () => void;
-
   addRFSupport() {
     this.enterRFSweep = () => {
       const packet = Buffer.alloc(16, 0);
@@ -615,8 +583,13 @@ class DeviceRM4 extends Device {
   request_header: Array<number>;
   code_sending_header: Array<number>;
 
-  constructor(host, macAddress, deviceType) {
-    super(host, macAddress, deviceType);
+  constructor(
+    host: RemoteInfo,
+    macAddress: Buffer,
+    deviceType: number,
+    opts: { log: typeof console.log; debug: boolean }
+  ) {
+    super(host, macAddress, deviceType, opts);
 
     this.request_header = [0x04, 0x00];
     this.code_sending_header = [0xd0, 0x00];
@@ -630,7 +603,7 @@ class DeviceRM4 extends Device {
     this.sendPacket(0x6a, packet);
   }
 
-  sendData(data, debug = false) {
+  sendData(data: Buffer, debug = false) {
     let packet = Buffer.from(this.code_sending_header);
     packet = Buffer.concat([packet, Buffer.from([0x02, 0x00, 0x00, 0x00])]);
     packet = Buffer.concat([packet, data]);
@@ -661,7 +634,7 @@ class DeviceRM4 extends Device {
     this.sendPacket(0x6a, packet);
   }
 
-  onPayloadReceived(err, payload) {
+  onPayloadReceived(_err: number, payload: Buffer) {
     const param = payload[0];
 
     const data = Buffer.alloc(payload.length - 4, 0);
