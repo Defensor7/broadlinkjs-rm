@@ -3,7 +3,12 @@ import { createSocket, Socket, RemoteInfo } from 'dgram';
 import { networkInterfaces } from 'os';
 import assert, { AssertionError } from 'assert';
 import crypto from 'crypto';
-import { create } from 'domain';
+
+function logBuffer(payload: Buffer) {
+  for (let i = 0; i < payload.length; i += 16) {
+    console.log([...payload.slice(i, i + 16)].map((b) => b.toString(16)));
+  }
+}
 
 // RM Devices (without RF support)
 const rmDeviceTypes = new Map([
@@ -283,6 +288,7 @@ class Broadlink extends EventEmitter {
 
     const payload = Buffer.alloc(0x88);
     payload[0x26] = 0x14;
+    console.log(stringToBytes(ssid));
     payload.set(stringToBytes(ssid), 68);
     payload.set(stringToBytes(password), 100);
     payload.set([ssid.length, password.length, securityMode], 0x84);
@@ -292,23 +298,26 @@ class Broadlink extends EventEmitter {
     );
     payload[0x20] = checksum & 0xff; // Checksum 1 position
     payload[0x21] = checksum >> 8; // Checksum 2 position
+
     const socket = createSocket({ type: 'udp4', reuseAddr: true });
-    socket.setBroadcast(true);
-    socket.send(
-      payload,
-      80,
-      '255.255.255.255',
-      (error: Error | null, bytes: number) => {
-        assert(!error, `Can't set up. Error ${error}`);
-        socket.close();
-      }
-    );
+    socket.bind(() => {
+      socket.setBroadcast(true);
+      socket.send(
+        payload,
+        80,
+        '255.255.255.255',
+        (error: Error | null, bytes: number) => {
+          assert(!error, `Can't set up. Error ${error}`);
+          socket.close();
+        }
+      );
+    });
   }
 }
 
 const stringToBytes = (string: string) =>
   [...string].map((charString) => {
-    const char = string.charCodeAt(0);
+    const char = charString.charCodeAt(0);
     assert(
       char,
       `Can't convert "${charString}" in string "${string}" to a byte.`
@@ -713,4 +722,4 @@ class DeviceRM4 extends Device {
   }
 }
 
-module.exports = Broadlink;
+export default Broadlink;
