@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
 import { createSocket, Socket, RemoteInfo } from 'dgram';
 import { networkInterfaces } from 'os';
-import assert from 'assert';
+import assert, { AssertionError } from 'assert';
 import crypto from 'crypto';
+import { create } from 'domain';
 
 // RM Devices (without RF support)
 const rmDeviceTypes = new Map([
@@ -263,7 +264,57 @@ class Broadlink extends EventEmitter {
 
     device.authenticate();
   }
+
+  SECURITY_MODES = new Map([
+    ['NONE', 0],
+    ['WEP', 1],
+    ['WPA1', 2],
+    ['WPA2', 3],
+    ['WPA1/2', 4],
+  ]);
+
+  setup(ssid: string, password: string, security: string) {
+    assert(
+      this.SECURITY_MODES.has(security),
+      `security mode "${security}" must be one of ${this.SECURITY_MODES.keys()}`
+    );
+
+    const securityMode = this.SECURITY_MODES.get(security) || 0;
+
+    const payload = Buffer.alloc(0x88);
+    payload[0x26] = 0x14;
+    payload.set(stringToBytes(ssid), 68);
+    payload.set(stringToBytes(password), 100);
+    payload.set([ssid.length, password.length, securityMode], 0x84);
+    const checksum = payload.reduce(
+      (checksum, byte) => (checksum + byte) & 0xffff,
+      0xbeaf
+    );
+    payload[0x20] = checksum & 0xff; // Checksum 1 position
+    payload[0x21] = checksum >> 8; // Checksum 2 position
+    const socket = createSocket({ type: 'udp4', reuseAddr: true });
+    socket.setBroadcast(true);
+    socket.send(
+      payload,
+      80,
+      '255.255.255.255',
+      (error: Error | null, bytes: number) => {
+        assert(!error, `Can't set up. Error ${error}`);
+        socket.close();
+      }
+    );
+  }
 }
+
+const stringToBytes = (string: string) =>
+  [...string].map((charString) => {
+    const char = string.charCodeAt(0);
+    assert(
+      char,
+      `Can't convert "${charString}" in string "${string}" to a byte.`
+    );
+    return char;
+  });
 
 class Device extends EventEmitter {
   host: RemoteInfo;
