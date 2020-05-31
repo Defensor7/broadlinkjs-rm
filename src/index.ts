@@ -281,14 +281,15 @@ class Broadlink extends EventEmitter {
   setup(ssid: string, password: string, security: string) {
     assert(
       this.SECURITY_MODES.has(security),
-      `security mode "${security}" must be one of ${this.SECURITY_MODES.keys()}`
+      `security mode "${security}" must be one of ${[
+        ...this.SECURITY_MODES.keys(),
+      ]}`
     );
 
     const securityMode = this.SECURITY_MODES.get(security) || 0;
 
     const payload = Buffer.alloc(0x88);
     payload[0x26] = 0x14;
-    console.log(stringToBytes(ssid));
     payload.set(stringToBytes(ssid), 68);
     payload.set(stringToBytes(password), 100);
     payload.set([ssid.length, password.length, securityMode], 0x84);
