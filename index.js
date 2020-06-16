@@ -28,6 +28,7 @@ rmPlusDeviceTypes[parseInt(0x27a6, 16)] = 'Broadlink RM2 Pro PP';
 rmPlusDeviceTypes[parseInt(0x279d, 16)] = 'Broadlink RM3 Pro Plus';
 rmPlusDeviceTypes[parseInt(0x27a9, 16)] = 'Broadlink RM3 Pro Plus v2'; // (model RM 3422)
 rmPlusDeviceTypes[parseInt(0x27c3, 16)] = 'Broadlink RM3 Pro';
+rmPlusDeviceTypes[parseInt(0x6026, 16)] = 'Broadlink RM4 Pro';
 
 // RM4 Devices (without RF support)
 const rm4DeviceTypes = {};
